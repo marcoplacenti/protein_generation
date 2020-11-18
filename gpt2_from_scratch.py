@@ -5,6 +5,7 @@ import torch.nn as nn
 import math
 from torch.autograd import Variable
 import numpy as np
+import random
 
 
 class Embedder(nn.Module):
@@ -181,10 +182,17 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.98), eps=1e-9)
 
+    batch_size = 64
     for epoch in range(1000):
         total_loss = 0
-        preds = model(seq_input, mask)
-        ys = seq[:, 1:].contiguous().view(-1)
+
+        batch_idx = random.sample(range(seq.shape[0]), batch_size)
+        samples_batched = seq[batch_idx]
+        seq_input = samples_batched[:,:-1]
+        sampled_masks = mask[batch_idx]
+
+        preds = model(seq_input, sampled_masks)
+        ys = samples_batched[:, 1:].contiguous().view(-1)
         
         optimizer.zero_grad()
         aa = preds.view(-1, preds.size(-1))

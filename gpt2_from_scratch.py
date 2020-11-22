@@ -6,17 +6,19 @@ import math
 from torch.autograd import Variable
 import numpy as np
 import random
+import pandas as pd
+from tqdm.std import tqdm
 
 
 class Embedder(nn.Module):
-    def __init__(self, vocab_size, embedding_size):
+    def __init__(self, vocab_size, embedding_size, padding_idx):
         super().__init__()
-        self.embed = nn.Embedding(vocab_size, embedding_size)
+        self.embed = nn.Embedding(vocab_size, embedding_size, padding_idx=padding_idx)
     def forward(self, x):
         return self.embed(x)
 
 class PositionalEncoder(nn.Module):
-    def __init__(self, embedding_size, max_seq_len = 200, dropout = 0.1):
+    def __init__(self, embedding_size, max_seq_len=500, dropout = 0.1):
         super().__init__()
         self.embedding_size = embedding_size
         self.dropout = nn.Dropout(dropout)
@@ -25,23 +27,43 @@ class PositionalEncoder(nn.Module):
         pe = torch.zeros(max_seq_len, embedding_size)
         for pos in range(max_seq_len):
             for i in range(0, embedding_size, 2):
-                pe[pos, i] = \
-                math.sin(pos / (10000 ** ((2 * i)/embedding_size)))
-                pe[pos, i + 1] = \
-                math.cos(pos / (10000 ** ((2 * (i + 1))/embedding_size)))
+                pe[pos, i] = math.sin(pos / (10000 ** ((2 * i)/embedding_size)))
+                pe[pos, i + 1] = math.cos(pos / (10000 ** ((2 * (i + 1))/embedding_size)))
         pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
- 
-    
+
     def forward(self, x):
         x = x * math.sqrt(self.embedding_size)
         #add constant to embedding
         seq_len = x.size(1)
-        pe = Variable(self.pe[:,:seq_len], requires_grad=False)
-        if x.is_cuda:
-            pe.cuda()
-        x = x + pe
+        self.pe = Variable(self.pe[:,:seq_len], requires_grad=False)
+        #if x.is_cuda:
+            #self.pe.cuda()
+        x = x + self.pe
         return self.dropout(x)
+        
+"""
+class PositionalEncoder(nn.Module):
+
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        print(pe.shape)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:x.size(0), :]
+        return self.dropout(x)
+ 
+"""
+    
 
 class Decoder(nn.Module):
     def __init__(self, embedding_size, heads):
@@ -148,9 +170,9 @@ class FeedForward(nn.Module):
         
 
 class ProGen(nn.Module):
-    def __init__(self, vocab_size, embeddings_size):
+    def __init__(self, vocab_size, embeddings_size, padding_idx):
         super().__init__()
-        self.embedder = Embedder(vocab_size, embeddings_size)
+        self.embedder = Embedder(vocab_size, embeddings_size, padding_idx)
         self.pe = PositionalEncoder(embeddings_size, dropout=0.1)
         self.decoder = Decoder(embeddings_size, heads=8)
     
@@ -161,42 +183,108 @@ class ProGen(nn.Module):
         return x
 
 
-def create_mask(s):
-    dim = s.shape[0]
+def create_mask(s, token_to_id, id_to_token):
+    """dim = s.shape[0]
     s_mask = np.full((dim, dim), True)
     for i in range(dim):
         s_mask[i][i+1:] = False
-    return s_mask
+    """
+    pad_id = token_to_id["<PAD>"]
+    dummy_id = token_to_id["<DUMMY>"]
+    dim = s.shape[0]
+    s_mask = np.full((dim, dim), False)
+    for i in range(dim):
+        curr_seq = s[:i+1]
+        for j, token in enumerate(curr_seq):
+            if token != pad_id:# and token != dummy_id:
+                s_mask[i][j] = True
     
+    return s_mask
+
+
+def get_data(max_length):
+    data = pd.read_csv("dataset.csv")
+    data = data.replace(np.nan, '<DUMMY>', regex=True)
+    data.drop("Unnamed: 0", axis=1, inplace=True)
+    data.drop("Entry", axis=1, inplace=True)
+    data = data[data["Sequence"].map(len) <= max_length]
+    vocab = set()
+    for col in data.columns:
+        if col != "Sequence":
+            vocab.update(data[col])
+
+    seq_len = []
+    max_seq = 0
+    for seq in data["Sequence"]:
+        seq = [s for s in seq]
+        seq_len.append(len(seq))
+        if len(seq) > max_seq:
+            max_seq = len(seq)
+        vocab.update(seq)
+
+    vocab.update(["<PAD>"])
+
+    return data, vocab, max_seq
+
+def process_data(data, vocab, max_seq):
+    token_to_id, id_to_token = {}, {}
+    for i, token in enumerate(vocab):
+        token_to_id[token] = i
+        id_to_token[i] = token
+
+    
+    seq = []
+    for record in data.values:
+        tags = record[:-1]
+        sequence = record[-1]
+        
+        encoded_record = [token_to_id[tag] for tag in tags]
+
+        for char in sequence:
+            encoded_record.append(token_to_id[char])
+        
+        if len(sequence) < max_seq:
+            for i in range(max_seq-len(sequence)):
+                encoded_record.append(token_to_id["<PAD>"])
+
+        seq.append(encoded_record)
+
+
+    return np.array(seq), token_to_id, id_to_token
 
 if __name__ == "__main__":
-    vocab_size = 100
-    seq = torch.from_numpy(np.random.randint(1, vocab_size, size=(5000,15)))
+    data, vocab, max_seq = get_data(max_length=40)
+    seq, token_to_id, id_to_token = process_data(data, vocab, max_seq)
+    seq = torch.from_numpy(seq)
+    #seq = torch.from_numpy(np.random.randint(1, 100, size=(5000,15)))
+    
     seq_input = seq[:, :-1]
     mask = []
-    for i, s in enumerate(seq_input):
-        mask.append(create_mask(s))
+    for i, s in enumerate(tqdm(seq_input, desc="Creating masks")):
+        mask.append(create_mask(s, token_to_id, id_to_token))
+    
     mask = torch.from_numpy(np.array(mask))
+    d_model = max(list(token_to_id.values()))
 
-    model = ProGen(vocab_size, 128)
+    model = ProGen(len(vocab), 512, token_to_id["<PAD>"])
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.98), eps=1e-9)
 
-    batch_size = 64
-    for epoch in range(1000):
+    batch_size = 16
+    for epoch in range(20):
         total_loss = 0
 
-        batch_idx = random.sample(range(seq.shape[0]), batch_size)
+        batch_idx = random.sample(range(seq_input.shape[0]), batch_size)
         samples_batched = seq[batch_idx]
-        seq_input = samples_batched[:,:-1]
-        sampled_masks = mask[batch_idx]
 
-        preds = model(seq_input, sampled_masks)
+        batch_input = samples_batched[:,:-1]
+        sampled_masks = mask[batch_idx]
         ys = samples_batched[:, 1:].contiguous().view(-1)
-        
+
+        preds = model(batch_input, sampled_masks)
+
         optimizer.zero_grad()
-        aa = preds.view(-1, preds.size(-1))
-        
+               
         loss = F.cross_entropy(preds.view(-1, preds.size(-1)), ys)
         loss.backward()
         optimizer.step()

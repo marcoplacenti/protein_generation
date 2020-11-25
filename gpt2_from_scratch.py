@@ -1,6 +1,7 @@
 import torch.nn.functional as F
 import torch
 import torch.nn as nn
+import torch.distributions as dist
 
 import math
 from torch.autograd import Variable
@@ -57,7 +58,7 @@ class Decoder(nn.Module):
         self.attn_1 = MultiHeadAttention(heads, embedding_size, dropout=0.1)
         self.ff = FeedForward(embedding_size, dropout=0.1)
 
-    def forward(self, x, mask):
+    def forward(self, x, mask=None):
         x2 = self.norm_1(x)
         x = x + self.dropout_1(self.attn_1(x2, x2, x2, mask))
         x2 = self.norm_2(x)
@@ -81,12 +82,13 @@ class Norm(nn.Module):
         / (x.std(dim=-1, keepdim=True) + self.eps) + self.bias
         return norm
 
-def attention(q, k, v, d_k, mask, dropout=None):
+def attention(q, k, v, d_k, mask=None, dropout=None):
     
     scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
     
-    mask = mask.unsqueeze(1)
-    scores = scores.masked_fill(mask == 0, -1e9)
+    if mask is not None:
+        mask = mask.unsqueeze(1)
+        scores = scores.masked_fill(mask == 0, -1e9)
     
     scores = F.softmax(scores, dim=-1)
     
@@ -159,7 +161,7 @@ class ProGen(nn.Module):
         #self.layers = get_clones(DecoderLayer(embeddings_size, 8, 0.1), number_of_layers)
         self.softmax = nn.Softmax(dim=1)
     
-    def forward(self, seq, mask):
+    def forward(self, seq, mask=None):
         x = self.embedder(seq)
         x = self.pe(x)
         x = self.decoder(x, mask)
@@ -173,12 +175,13 @@ def create_mask(s, token_to_id, id_to_token):
         s_mask[i][i+1:] = False
     """
     pad_id = token_to_id["<PAD>"]
+    dummy_id = token_to_id["<DUMMY>"]
     dim = s.shape[0]
     s_mask = np.full((dim, dim), False)
     for i in range(dim):
         curr_seq = s[:i+1]
         for j, token in enumerate(curr_seq):
-            if token != pad_id:
+            if token != pad_id:# and token != dummy_id:
                 s_mask[i][j] = True
     
     return s_mask
@@ -247,6 +250,68 @@ def process_data(data, vocab, max_seq):
 
     return np.array(seq), token_to_id, id_to_token
 
+def gen(data, max_length):
+    tags_end_position = 95 # hardcoded for now
+    test_Seq_no = 8
+    seqpred=[]
+    aa="<PAD>"
+    for i in range(tags_end_position, max_length+tags_end_position-1):
+        tags = data.loc[test_Seq_no].tolist()[0:tags_end_position]
+        if len(seqpred)==0:
+            tags.append(aa)
+            c=1
+        else:
+            for a in range(len(seqpred)):
+                tags.append(seqpred[a])
+            c=0
+        for a in range(max_length-len(seqpred)-c):
+            tags.append('<PAD>')
+        #print(c, len(tags), tags)
+        mask=[]
+        for tag in tags:
+            #print (tag)
+            if tag == "<PAD>" or tag == "<DUMMY>":
+                mask.append(False)
+            else:
+                mask.append(True)
+        for a in range(len(tags)):
+            pass#print(tags[a],mask[a])
+        sample = torch.from_numpy(np.array(make_tokens_from_tags(tags,token_to_id)))
+        mask = torch.from_numpy(np.array(mask))
+        tags = sample.type(torch.LongTensor)
+        #mask = mask.type(torch.LongTensor)
+        prediction = model(tags).transpose(1,2)
+        print(prediction.shape)
+        next_char_idx = sample_categorical(prediction[0, :, tags.shape[0] - 1]) #0.5
+        if next_char_idx <= 2:
+            # query += "*"
+            pass#break
+        print(int(next_char_idx), id_to_token[int(next_char_idx)])
+        #query += str(chr(max(32, next_char_idx)))
+        #prediction = prediction.view(-1, prediction.size(-1))
+        #idx=int(torch.argmax(prediction[i+1]))
+        #aa = id_to_token[idx]
+        #seqpred.append(aa)
+    print(seqpred)
+
+def sample_categorical(lnprobs, temperature=1.0):
+    """
+    Sample an element from a categorical distribution
+    :param lnprobs: Outcome log-probabilities
+    :param temperature: Sampling temperature. 1.0 follows the given distribution,
+        0.0 returns the maximum probability element.
+    :return: The index of the sampled element.
+    """
+
+    if temperature == 0.0:
+        return lnprobs.argmax()
+    p = F.softmax(lnprobs / temperature, dim=0)
+    return dist.Categorical(p).sample()
+
+def make_tokens_from_tags(tags, token_to_id):
+    tokens = map(lambda x: token_to_id[x], tags)
+    return (list(tokens))
+
 if __name__ == "__main__":
     data, vocab, max_seq = get_data(max_length=40)
     seq, token_to_id, id_to_token = process_data(data, vocab, max_seq)
@@ -269,8 +334,8 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.98), eps=1e-9)
 
-    batch_size = 64
-    for epoch in range(20):
+    batch_size = 16
+    for epoch in range(10):
         total_loss = 0
 
         batch_idx = random.sample(range(seq.shape[0]), batch_size)
@@ -279,15 +344,21 @@ if __name__ == "__main__":
         batch_input = samples_batched[:,:-1]
         sampled_masks = mask[batch_idx]
         ys = samples_batched[:, 1:].contiguous().view(-1)
+        #print(batch_input, batch_input.shape)
+        #print(ys, ys.shape)
+        #exit()
         
+
         preds = model(batch_input, sampled_masks)
        
         optimizer.zero_grad()
-               
+        
         loss = F.cross_entropy(preds.view(-1, preds.size(-1)), ys)
         loss.backward()
         optimizer.step()
         
         total_loss += loss.item()
         print(epoch, total_loss)
+
+    gen(data, 40)
     

@@ -9,6 +9,7 @@ import numpy as np
 import random
 import pandas as pd
 from tqdm.std import tqdm
+import copy
 
 
 class Embedder(nn.Module):
@@ -85,9 +86,11 @@ class Norm(nn.Module):
 def attention(q, k, v, d_k, mask=None, dropout=None):
     
     scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
-    
+    #print(scores.shape)
     if mask is not None:
         mask = mask.unsqueeze(1)
+        #print(mask.shape)
+        #exit()
         scores = scores.masked_fill(mask == 0, -1e9)
     
     scores = F.softmax(scores, dim=-1)
@@ -150,6 +153,29 @@ class FeedForward(nn.Module):
         x = self.linear_2(x)
         return x
         
+class DecoderLayer(nn.Module):
+    def __init__(self, embedding_size, heads, dropout=0.1):
+        super().__init__()
+        self.norm_1 = Norm(embedding_size)
+        self.norm_2 = Norm(embedding_size)
+        #self.norm_3 = Norm(d_model)
+        
+        self.dropout_1 = nn.Dropout(dropout)
+        self.dropout_2 = nn.Dropout(dropout)
+        #self.dropout_3 = nn.Dropout(dropout)
+        
+        self.attn_1 = MultiHeadAttention(heads, embedding_size, dropout=0.1)
+        self.ff = FeedForward(embedding_size, dropout=0.1)
+
+    def forward(self, x, mask=None):
+        x2 = self.norm_1(x)
+        x = x + self.dropout_1(self.attn_1(x2, x2, x2, mask))
+        x2 = self.norm_2(x)
+        x = x + self.dropout_2(self.ff(x2))
+        return x
+
+def get_clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 class ProGen(nn.Module):
     def __init__(self, vocab_size, embeddings_size, heads, padding_idx, number_of_layers):
@@ -158,17 +184,28 @@ class ProGen(nn.Module):
         self.embedder = Embedder(vocab_size, embeddings_size, padding_idx)
         self.pe = PositionalEncoder(embeddings_size, max_seq_len=embeddings_size, dropout=0.1)
         self.decoder = Decoder(embeddings_size, heads=heads)
-        #self.layers = get_clones(DecoderLayer(embeddings_size, 8, 0.1), number_of_layers)
+        self.layers = get_clones(DecoderLayer(embeddings_size, heads, 0.1), number_of_layers)
         self.softmax = nn.Softmax(dim=1)
+
+        self.toprobs = nn.Linear(embeddings_size, vocab_size)
     
     def forward(self, seq, mask=None):
         x = self.embedder(seq)
         x = self.pe(x)
-        x = self.decoder(x, mask)
-        return x
+        for i in range(self.number_of_layers):
+            x = self.layers[i](x, mask)
+        #x = self.decoder(x, mask)
+        
+        batch, seq_len, emb_size = x.shape
+
+        x = x.view(batch * seq_len, emb_size)   # [ batch*seq_len,  emb_dim ]
+        x = self.toprobs(x)                                 # [ batch*seq_len,  num_tokens ]
+        x = x.view(batch, emb_size, seq_len) # [ batch, num_tokens, seq_len ]
+
+        return F.log_softmax(x, dim=1)
 
 
-def create_mask(s, token_to_id, id_to_token):
+def create_mask(s, token_to_id, id_to_token, no_of_tags):
     """dim = s.shape[0]
     s_mask = np.full((dim, dim), True)
     for i in range(dim):
@@ -177,21 +214,26 @@ def create_mask(s, token_to_id, id_to_token):
     pad_id = token_to_id["<PAD>"]
     dummy_id = token_to_id["<DUMMY>"]
     dim = s.shape[0]
-    s_mask = np.full((dim, dim), False)
-    for i in range(dim):
-        curr_seq = s[:i+1]
+    s_mask_tags = np.full((dim-no_of_tags, no_of_tags), True)
+    s_mask = np.full((dim-no_of_tags, dim-no_of_tags), False)
+    for i in range(1, s_mask.shape[0]):
+        curr_seq = s[no_of_tags:no_of_tags+i]
         for j, token in enumerate(curr_seq):
-            if token != pad_id:# and token != dummy_id:
+            if token != pad_id and token != dummy_id:
                 s_mask[i][j] = True
     
+    s_mask = np.hstack((s_mask_tags, s_mask))
+    
+    #print(s_mask)
+    #exit()
     return s_mask
 
 
 def get_data(max_length):
     data = pd.read_csv("dataset.csv")
     data = data.replace(np.nan, '<DUMMY>', regex=True)
-    data.drop("Unnamed: 0", axis=1, inplace=True)
-    data.drop("Entry", axis=1, inplace=True)
+    #data.drop("Unnamed: 0", axis=1, inplace=True)
+    #data.drop("Entry", axis=1, inplace=True)
     data = data[data["Sequence"].map(len) <= max_length]
     vocab = set()
     for col in data.columns:
@@ -313,52 +355,69 @@ def make_tokens_from_tags(tags, token_to_id):
     return (list(tokens))
 
 if __name__ == "__main__":
-    data, vocab, max_seq = get_data(max_length=40)
+    data, vocab, max_seq = get_data(max_length=85)
+    no_of_tags = 0#len(data.columns)-1
     seq, token_to_id, id_to_token = process_data(data, vocab, max_seq)
     seq = torch.from_numpy(seq)
     #seq = torch.from_numpy(np.random.randint(1, 100, size=(5000,15)))
+
+    #print(seq.shape)
+    #print(seq[:,:-1].shape)
+    x = seq
+    y = torch.hstack((x[:,1:], torch.zeros(x.shape[0], 1, dtype=torch.int32)))
     
-    seq_input = seq[:, :-1]
+    seq_input = seq#[:, :-1]
     mask = []
     for i, s in enumerate(tqdm(seq_input, desc="Creating masks")):
-        mask.append(create_mask(s, token_to_id, id_to_token))
+        mask.append(create_mask(s, token_to_id, id_to_token, no_of_tags))
     
     mask = torch.from_numpy(np.array(mask))
+
 
     #heads = 8
     #emb_size = int(len(vocab)/heads)+1
     #print(emb_size, emb_size*heads)
     
     # embedding_size needs to be divisible by heads
-    model = ProGen(vocab_size=len(vocab), embeddings_size=len(vocab), heads=1, padding_idx=token_to_id["<PAD>"], number_of_layers=8)
+    model = ProGen(vocab_size=len(vocab), embeddings_size=len(vocab), heads=1, padding_idx=token_to_id["<PAD>"], number_of_layers=6)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.98), eps=1e-9)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
     batch_size = 16
-    for epoch in range(10):
+    for epoch in range(1000):
         total_loss = 0
 
         batch_idx = random.sample(range(seq.shape[0]), batch_size)
-        samples_batched = seq[batch_idx]
+        samples_batched = x[batch_idx]
 
-        batch_input = samples_batched[:,:-1]
+        batch_input = samples_batched#[:,:-1]
         sampled_masks = mask[batch_idx]
-        ys = samples_batched[:, 1:].contiguous().view(-1)
-        #print(batch_input, batch_input.shape)
-        #print(ys, ys.shape)
-        #exit()
+        ys = y[batch_idx]
         
 
         preds = model(batch_input, sampled_masks)
-       
+
+        #preds = preds.transpose(1,2)
+        #preds = preds.reshape(preds.shape[0]*preds.shape[1], preds.shape[2])
+
+
         optimizer.zero_grad()
-        
-        loss = F.cross_entropy(preds.view(-1, preds.size(-1)), ys)
+
+        #loss = F.cross_entropy(preds, ys.flatten(), reduction='mean')
+        loss = F.nll_loss(preds, ys, reduction='mean')
+        nn.utils.clip_grad_norm_(model.parameters(), 1)
         loss.backward()
         optimizer.step()
         
-        total_loss += loss.item()
-        print(epoch, total_loss)
+        total_loss = loss.item()
 
-    gen(data, 40)
+        if epoch % 10 == 0:
+            print(f"EPOCH {epoch} LOSS {total_loss}")
+            print("PREDICTION")
+            print(torch.argmax(preds, dim=1))
+            print("GROUND TRUTH")
+            print(ys.flatten())
+            print()
+
+    #gen(data, 40)
     

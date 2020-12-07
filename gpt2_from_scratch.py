@@ -2,6 +2,7 @@ import torch.nn.functional as F
 import torch
 import torch.nn as nn
 import torch.distributions as dist
+from torch.optim.lr_scheduler import MultiStepLR
 
 import math
 from torch.autograd import Variable
@@ -37,7 +38,7 @@ class PositionalEncoder(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x * math.sqrt(self.embedding_size)
+        #x = x * math.sqrt(self.embedding_size)
         #add constant to embedding
         seq_len = x.size(1)
         self.pe = Variable(self.pe[:,:seq_len], requires_grad=False)
@@ -84,20 +85,16 @@ class Norm(nn.Module):
         return norm
 
 def attention(q, k, v, d_k, mask=None, dropout=None):
-    
     scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
-    #print(scores.shape)
     if mask is not None:
         mask = mask.unsqueeze(1)
-        #print(mask.shape)
-        #exit()
-        scores = scores.masked_fill(mask == 0, -1e9)
-    
+        scores = scores.masked_fill(mask == 0, float('-inf'))
+
     scores = F.softmax(scores, dim=-1)
-    
+
     if dropout is not None:
         scores = dropout(scores)
-        
+
     output = torch.matmul(scores, v)
     return output
 
@@ -130,7 +127,6 @@ class MultiHeadAttention(nn.Module):
         q = q.transpose(1,2)
         v = v.transpose(1,2)
         
-
         # calculate attention using function we will define next
         scores = attention(q, k, v, self.d_k, mask, self.dropout)
         # concatenate heads and put through final linear layer
@@ -142,7 +138,6 @@ class MultiHeadAttention(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, embedding_size, d_ff=2048, dropout = 0.1):
         super().__init__() 
-    
         # We set d_ff as a default to 2048
         self.linear_1 = nn.Linear(embedding_size, d_ff)
         self.dropout = nn.Dropout(dropout)
@@ -158,11 +153,9 @@ class DecoderLayer(nn.Module):
         super().__init__()
         self.norm_1 = Norm(embedding_size)
         self.norm_2 = Norm(embedding_size)
-        #self.norm_3 = Norm(d_model)
         
         self.dropout_1 = nn.Dropout(dropout)
         self.dropout_2 = nn.Dropout(dropout)
-        #self.dropout_3 = nn.Dropout(dropout)
         
         self.attn_1 = MultiHeadAttention(heads, embedding_size, dropout=0.1)
         self.ff = FeedForward(embedding_size, dropout=0.1)
@@ -174,6 +167,7 @@ class DecoderLayer(nn.Module):
         x = x + self.dropout_2(self.ff(x2))
         return x
 
+
 def get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
@@ -181,13 +175,13 @@ class ProGen(nn.Module):
     def __init__(self, vocab_size, embeddings_size, heads, padding_idx, number_of_layers):
         super().__init__()
         self.number_of_layers = number_of_layers
+        self.vocab_size = vocab_size
         self.embedder = Embedder(vocab_size, embeddings_size, padding_idx)
         self.pe = PositionalEncoder(embeddings_size, max_seq_len=embeddings_size, dropout=0.1)
         self.decoder = Decoder(embeddings_size, heads=heads)
         self.layers = get_clones(DecoderLayer(embeddings_size, heads, 0.1), number_of_layers)
-        self.softmax = nn.Softmax(dim=1)
-
         self.toprobs = nn.Linear(embeddings_size, vocab_size)
+
     
     def forward(self, seq, mask=None):
         x = self.embedder(seq)
@@ -200,41 +194,51 @@ class ProGen(nn.Module):
 
         x = x.view(batch * seq_len, emb_size)   # [ batch*seq_len,  emb_dim ]
         x = self.toprobs(x)                                 # [ batch*seq_len,  num_tokens ]
-        x = x.view(batch, emb_size, seq_len) # [ batch, num_tokens, seq_len ]
+        x = x.view(batch, self.vocab_size, seq_len) # [ batch, num_tokens, seq_len ]
 
         return F.log_softmax(x, dim=1)
 
 
-def create_mask(s, token_to_id, id_to_token, no_of_tags):
-    """dim = s.shape[0]
+def create_mask(s, pad_id): 
+    pad_idx = np.argwhere(s == pad_id)
+
+    dim = s.shape[0]
     s_mask = np.full((dim, dim), True)
     for i in range(dim):
         s_mask[i][i+1:] = False
-    """
-    pad_id = token_to_id["<PAD>"]
-    dummy_id = token_to_id["<DUMMY>"]
-    dim = s.shape[0]
-    s_mask_tags = np.full((dim-no_of_tags, no_of_tags), True)
-    s_mask = np.full((dim-no_of_tags, dim-no_of_tags), False)
-    for i in range(1, s_mask.shape[0]):
-        curr_seq = s[no_of_tags:no_of_tags+i]
-        for j, token in enumerate(curr_seq):
-            if token != pad_id and token != dummy_id:
-                s_mask[i][j] = True
-    
-    s_mask = np.hstack((s_mask_tags, s_mask))
-    
-    #print(s_mask)
-    #exit()
+        curr_seq = s[:i+1]
+        s_mask[i][pad_idx] = False
+
     return s_mask
 
 
 def get_data(max_length):
     data = pd.read_csv("dataset.csv")
-    data = data.replace(np.nan, '<DUMMY>', regex=True)
-    #data.drop("Unnamed: 0", axis=1, inplace=True)
-    #data.drop("Entry", axis=1, inplace=True)
+    data = data.replace(np.nan, '<PAD>', regex=True)
     data = data[data["Sequence"].map(len) <= max_length]
+
+    #largest_seq = 0
+    #for col in data.columns:
+        #obs_ = np.delete(obs, np.argwhere(obs == "<PAD>"))
+        #tags = np.append(obs_[:-1], np.array(["<EOT>"]))
+        #seq = [s for s in obs_[-1]]
+        #conc = np.append(tags, seq)
+        #conc = np.append(conc, ["<EOS>"])
+        #if len(conc) > largest_seq:
+        #    largest_seq = len(conc)
+        #data_.append(conc)
+
+    #for i, obs in enumerate(data_):
+        #pad_length = largest_seq-obs.shape[0]
+        #pad_array = ["<PAD>"]*pad_length
+        #data_[i] = np.append(obs, pad_array)
+
+    #data = np.array(data_)
+
+    #vocab = set()
+    #for obs in data:
+    #    vocab.update(obs)
+
     vocab = set()
     for col in data.columns:
         if col != "Sequence":
@@ -249,8 +253,33 @@ def get_data(max_length):
             max_seq = len(seq)
         vocab.update(seq)
 
+    #vocab.update(["<EOT>"])
     vocab.update(["<PAD>"])
     vocab.update(["<EOS>"])
+
+    
+    elements = set()
+    for col in data.columns[8:-1]:
+        elements.update(data[col].unique())
+
+    elem_to_col = {}
+    for i, element in enumerate(elements):
+        data[element] = "<PAD>"
+
+    for row in data.iterrows():
+        values = np.unique(row[1][data.columns[8:-1-len(elements)]].values)
+        values = np.delete(values, np.argwhere(values=="<PAD>"))
+        for element in elements:
+            if element in values:
+                row[1][element] = element
+
+    data.drop(data.columns[8:-1-len(elements)], axis=1, inplace=True)
+    
+    seq = data.pop("Sequence")
+    data["Sequence"] = seq
+
+    data.to_csv("dataset_processed_1.csv", index=False)
+    
 
     return data, vocab, max_seq
 
@@ -263,21 +292,28 @@ def process_data(data, vocab, max_seq):
     token_to_id["<EOS>"] = 1
     id_to_token[1] = "<EOS>"
 
-    token_to_id["<DUMMY>"] = 2
-    id_to_token[2] = "<DUMMY>"
+    #token_to_id["<EOT>"] = 2
+    #id_to_token[2] = "<EOT>"
+
+    #token_to_id["<DUMMY>"] = 2
+    #id_to_token[2] = "<DUMMY>"
 
     for i, token in enumerate(vocab):
-        cum_i = len(token_to_id.keys())
-        if token != "<PAD>" and token != "<EOS>" and token != "<DUMMY>":
-            token_to_id[token] = cum_i
-            id_to_token[cum_i] = token
-            cum_i += 1
+        id = len(token_to_id.keys())
+        if token != "<PAD>" and token != "<EOS>" and token != "<EOT>":
+            token_to_id[token] = id
+            id_to_token[id] = token
+            id += 1
 
     seq = []
+    #for obs in data:
+    #    encoded_obs = [token_to_id[token] for token in obs]
+    #    seq.append(encoded_obs)
+    
     for record in data.values:
         tags = record[:-1]
         sequence = record[-1]
-        
+
         encoded_record = [token_to_id[tag] for tag in tags]
 
         for char in sequence:
@@ -289,6 +325,7 @@ def process_data(data, vocab, max_seq):
                 encoded_record.append(token_to_id["<PAD>"])
 
         seq.append(encoded_record)
+    
 
     return np.array(seq), token_to_id, id_to_token
 
@@ -344,80 +381,96 @@ def sample_categorical(lnprobs, temperature=1.0):
         0.0 returns the maximum probability element.
     :return: The index of the sampled element.
     """
-
     if temperature == 0.0:
         return lnprobs.argmax()
     p = F.softmax(lnprobs / temperature, dim=0)
     return dist.Categorical(p).sample()
 
+def sample_sentence(model, query, max_len = 140, temperature=1):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    for _ in range(max_len - query.shape[0]):
+        #print(_)
+        query_ = torch.zeros(max_len).to(torch.long)
+        query_[:len(query)] = query
+        #print(make_sequence_from_tokens(query_, id_to_token))
+        output = model(query_.unsqueeze(0).to(device))
+        #print(output)
+        next_char_idx = sample_categorical(output[0, :, len(query) - 1], 0.5) #0.5
+        #print(next_char_idx)
+        query = query.tolist()
+        query.append(int(next_char_idx))
+        query = torch.from_numpy(np.array(query))
+        #print(make_sequence_from_tokens(query, id_to_token))
+        #print(query.shape)
+    return query
+
 def make_tokens_from_tags(tags, token_to_id):
     tokens = map(lambda x: token_to_id[x], tags)
     return (list(tokens))
 
+def make_sequence_from_tokens(ids, id_to_token):
+    sequence = map(lambda x: id_to_token[x], ids.tolist())
+    return "".join(list(sequence))
+
+
+
 if __name__ == "__main__":
-    data, vocab, max_seq = get_data(max_length=85)
-    no_of_tags = 0#len(data.columns)-1
+    data, vocab, max_seq = get_data(max_length=300)
     seq, token_to_id, id_to_token = process_data(data, vocab, max_seq)
     seq = torch.from_numpy(seq)
-    #seq = torch.from_numpy(np.random.randint(1, 100, size=(5000,15)))
 
-    #print(seq.shape)
-    #print(seq[:,:-1].shape)
     x = seq
     y = torch.hstack((x[:,1:], torch.zeros(x.shape[0], 1, dtype=torch.int32)))
     
-    seq_input = seq#[:, :-1]
+    seq_input = seq
     mask = []
     for i, s in enumerate(tqdm(seq_input, desc="Creating masks")):
-        mask.append(create_mask(s, token_to_id, id_to_token, no_of_tags))
+        mask.append(create_mask(s, token_to_id["<PAD>"]))
     
     mask = torch.from_numpy(np.array(mask))
-
-
-    #heads = 8
-    #emb_size = int(len(vocab)/heads)+1
-    #print(emb_size, emb_size*heads)
     
     # embedding_size needs to be divisible by heads
-    model = ProGen(vocab_size=len(vocab), embeddings_size=len(vocab), heads=1, padding_idx=token_to_id["<PAD>"], number_of_layers=6)
+    model = ProGen(vocab_size=len(vocab), embeddings_size=512, heads=8, padding_idx=token_to_id["<PAD>"], number_of_layers=6)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    #scheduler = MultiStepLR(optimizer, milestones=[50, 200, 500], gamma=0.1)
 
-    batch_size = 16
-    for epoch in range(1000):
+    batch_size = 32
+    for epoch in range(1):
         total_loss = 0
 
         batch_idx = random.sample(range(seq.shape[0]), batch_size)
         samples_batched = x[batch_idx]
 
-        batch_input = samples_batched#[:,:-1]
+        batch_input = samples_batched
         sampled_masks = mask[batch_idx]
         ys = y[batch_idx]
-        
 
         preds = model(batch_input, sampled_masks)
 
-        #preds = preds.transpose(1,2)
-        #preds = preds.reshape(preds.shape[0]*preds.shape[1], preds.shape[2])
-
-
         optimizer.zero_grad()
-
-        #loss = F.cross_entropy(preds, ys.flatten(), reduction='mean')
-        loss = F.nll_loss(preds, ys, reduction='mean')
+        loss = F.nll_loss(preds, ys, reduction='mean', ignore_index=0)
         nn.utils.clip_grad_norm_(model.parameters(), 1)
+
         loss.backward()
         optimizer.step()
+        #scheduler.step()
         
         total_loss = loss.item()
 
-        if epoch % 10 == 0:
+        if epoch % 1 == 0:
             print(f"EPOCH {epoch} LOSS {total_loss}")
-            print("PREDICTION")
-            print(torch.argmax(preds, dim=1))
-            print("GROUND TRUTH")
-            print(ys.flatten())
-            print()
+            
+        if epoch % 50 == 0:
+            batch_idx = random.sample(range(seq.shape[0]), 1)    
+            query = []
+            for token in x[batch_idx][0]:
+                query.append(token)
+            query = torch.from_numpy(np.array(query))[0:168]
+            #gen = generate(model, query, token_to_id["<PAD>"])
+            #print(make_sequence_from_tokens(gen, id_to_token))
+            sampled  = make_sequence_from_tokens(sample_sentence(model, query,
+                                                          max_len = 290,
+                                                          temperature = 0), id_to_token)
+            print(sampled)
 
-    #gen(data, 40)
-    

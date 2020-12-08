@@ -395,11 +395,13 @@ def sample_sentence(model, query, max_len = 140, temperature=1):
         #print(make_sequence_from_tokens(query_, id_to_token))
         output = model(query_.unsqueeze(0).to(device))
         #print(output)
-        next_char_idx = sample_categorical(output[0, :, len(query) - 1], 0.5) #0.5
+        next_char_idx = sample_categorical(output[0, :, len(query) - 1], 0) #0.5
         #print(next_char_idx)
         query = query.tolist()
         query.append(int(next_char_idx))
         query = torch.from_numpy(np.array(query))
+        if int(next_char_idx) < 2:
+            break
         #print(make_sequence_from_tokens(query, id_to_token))
         #print(query.shape)
     return query
@@ -415,28 +417,31 @@ def make_sequence_from_tokens(ids, id_to_token):
 
 
 if __name__ == "__main__":
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     data, vocab, max_seq = get_data(max_length=300)
     seq, token_to_id, id_to_token = process_data(data, vocab, max_seq)
-    seq = torch.from_numpy(seq)
+    seq = torch.from_numpy(seq).to(device)
 
     x = seq
-    y = torch.hstack((x[:,1:], torch.zeros(x.shape[0], 1, dtype=torch.int32)))
+    y = torch.hstack((x[:,1:], torch.zeros(x.shape[0], 1, dtype=torch.int32))).to(device)
     
     seq_input = seq
     mask = []
     for i, s in enumerate(tqdm(seq_input, desc="Creating masks")):
         mask.append(create_mask(s, token_to_id["<PAD>"]))
     
-    mask = torch.from_numpy(np.array(mask))
+    mask = torch.from_numpy(np.array(mask)).to(device)
     
     # embedding_size needs to be divisible by heads
-    model = ProGen(vocab_size=len(vocab), embeddings_size=512, heads=8, padding_idx=token_to_id["<PAD>"], number_of_layers=6)
+    model = ProGen(vocab_size=len(vocab), embeddings_size=512, heads=8, padding_idx=token_to_id["<PAD>"], number_of_layers=3).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
-    #scheduler = MultiStepLR(optimizer, milestones=[50, 200, 500], gamma=0.1)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    scheduler = MultiStepLR(optimizer, milestones=[60, 100, 150], gamma=0.1)
 
-    batch_size = 32
-    for epoch in range(1):
+    batch_size = 16
+    for epoch in range(200):
         total_loss = 0
 
         batch_idx = random.sample(range(seq.shape[0]), batch_size)
@@ -449,24 +454,24 @@ if __name__ == "__main__":
         preds = model(batch_input, sampled_masks)
 
         optimizer.zero_grad()
-        loss = F.nll_loss(preds, ys, reduction='mean', ignore_index=0)
+        loss = F.nll_loss(preds, ys, reduction='mean')#, ignore_index=0)
         nn.utils.clip_grad_norm_(model.parameters(), 1)
 
         loss.backward()
         optimizer.step()
-        #scheduler.step()
+        scheduler.step()
         
         total_loss = loss.item()
 
         if epoch % 1 == 0:
-            print(f"EPOCH {epoch} LOSS {total_loss}")
+            print(f"EPOCH {epoch} LOSS {round(total_loss,3)} PERPLEXITY {round(math.exp(total_loss),3)}")
             
-        if epoch % 50 == 0:
+        if epoch % 10 == 0:
             batch_idx = random.sample(range(seq.shape[0]), 1)    
             query = []
             for token in x[batch_idx][0]:
                 query.append(token)
-            query = torch.from_numpy(np.array(query))[0:168]
+            query = torch.from_numpy(np.array(query))[0:168+11]
             #gen = generate(model, query, token_to_id["<PAD>"])
             #print(make_sequence_from_tokens(gen, id_to_token))
             sampled  = make_sequence_from_tokens(sample_sentence(model, query,

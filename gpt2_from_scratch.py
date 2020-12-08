@@ -442,31 +442,47 @@ if __name__ == "__main__":
 
     batch_size = 16
     for epoch in range(200):
-        total_loss = 0
+        batch_idx = random.sample(range(seq.shape[0]), batch_size*2)
+        train_idx = batch_idx[:batch_size]
+        test_idx = batch_idx[batch_size:]
 
-        batch_idx = random.sample(range(seq.shape[0]), batch_size)
-        samples_batched = x[batch_idx]
-
-        batch_input = samples_batched
-        sampled_masks = mask[batch_idx]
-        ys = y[batch_idx]
-
-        preds = model(batch_input, sampled_masks)
-
+        model.train()
         optimizer.zero_grad()
-        loss = F.nll_loss(preds, ys, reduction='mean')#, ignore_index=0)
+
+        train_input = x[train_idx]
+        train_masks = mask[train_idx]
+        train_y = y[train_idx]
+
+        preds = model(train_input, train_masks)
+
+        loss = F.nll_loss(preds, train_y, reduction='mean', ignore_index=0)
         nn.utils.clip_grad_norm_(model.parameters(), 1)
+
+        train_total_loss = loss.item()
+        
 
         loss.backward()
         optimizer.step()
         scheduler.step()
+
+        model.eval()
         
-        total_loss = loss.item()
+        test_input = x[test_idx]
+        test_masks = mask[test_idx]
+        test_y = y[test_idx]
+
+        preds = model(test_input, test_masks)
+        loss = F.nll_loss(preds, test_y, reduction='mean', ignore_index=0)
+        
+        test_total_loss = loss.item()
 
         if epoch % 1 == 0:
-            print(f"EPOCH {epoch} LOSS {round(total_loss,3)} PERPLEXITY {round(math.exp(total_loss),3)}")
+            print(f"EPOCH {epoch} TRAIN_LOSS {round(train_total_loss,3)} \
+                    TRAIN_PERPLEXITY {round(math.exp(train_total_loss),3)} \
+                    TEST_LOSS {round(test_total_loss,3)} \
+                    TEST_PERPLEXITY {round(math.exp(test_total_loss),3)}")
             
-        if epoch % 10 == 0:
+        if epoch % 10 == 0 and epoch != 0:
             batch_idx = random.sample(range(seq.shape[0]), 1)    
             query = []
             for token in x[batch_idx][0]:

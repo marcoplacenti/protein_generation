@@ -329,50 +329,6 @@ def process_data(data, vocab, max_seq):
 
     return np.array(seq), token_to_id, id_to_token
 
-def gen(data, max_length):
-    tags_end_position = 95 # hardcoded for now
-    test_Seq_no = 8
-    seqpred=[]
-    aa="<PAD>"
-    for i in range(tags_end_position, max_length+tags_end_position-1):
-        tags = data.loc[test_Seq_no].tolist()[0:tags_end_position]
-        if len(seqpred)==0:
-            tags.append(aa)
-            c=1
-        else:
-            for a in range(len(seqpred)):
-                tags.append(seqpred[a])
-            c=0
-        for a in range(max_length-len(seqpred)-c):
-            tags.append('<PAD>')
-        #print(c, len(tags), tags)
-        mask=[]
-        for tag in tags:
-            #print (tag)
-            if tag == "<PAD>" or tag == "<DUMMY>":
-                mask.append(False)
-            else:
-                mask.append(True)
-        for a in range(len(tags)):
-            pass#print(tags[a],mask[a])
-        sample = torch.from_numpy(np.array(make_tokens_from_tags(tags,token_to_id)))
-        mask = torch.from_numpy(np.array(mask))
-        tags = sample.type(torch.LongTensor)
-        #mask = mask.type(torch.LongTensor)
-        prediction = model(tags).transpose(1,2)
-        print(prediction.shape)
-        next_char_idx = sample_categorical(prediction[0, :, tags.shape[0] - 1]) #0.5
-        if next_char_idx <= 2:
-            # query += "*"
-            pass#break
-        print(int(next_char_idx), id_to_token[int(next_char_idx)])
-        #query += str(chr(max(32, next_char_idx)))
-        #prediction = prediction.view(-1, prediction.size(-1))
-        #idx=int(torch.argmax(prediction[i+1]))
-        #aa = id_to_token[idx]
-        #seqpred.append(aa)
-    print(seqpred)
-
 def sample_categorical(lnprobs, temperature=1.0):
     """
     Sample an element from a categorical distribution
@@ -406,9 +362,6 @@ def sample_sentence(model, query, max_len = 140, temperature=1):
         #print(query.shape)
     return query
 
-def make_tokens_from_tags(tags, token_to_id):
-    tokens = map(lambda x: token_to_id[x], tags)
-    return (list(tokens))
 
 def make_sequence_from_tokens(ids, id_to_token):
     sequence = map(lambda x: id_to_token[x], ids.tolist())
@@ -455,7 +408,7 @@ if __name__ == "__main__":
 
         preds = model(train_input, train_masks)
 
-        loss = F.nll_loss(preds, train_y, reduction='mean', ignore_index=0)
+        loss = F.nll_loss(preds, train_y, reduction='mean')#, ignore_index=0)
         nn.utils.clip_grad_norm_(model.parameters(), 1)
 
         train_total_loss = loss.item()
@@ -472,7 +425,7 @@ if __name__ == "__main__":
         test_y = y[test_idx]
 
         preds = model(test_input, test_masks)
-        loss = F.nll_loss(preds, test_y, reduction='mean', ignore_index=0)
+        loss = F.nll_loss(preds, test_y, reduction='mean')#, ignore_index=0)
         
         test_total_loss = loss.item()
 
@@ -482,14 +435,11 @@ if __name__ == "__main__":
                     TEST_LOSS {round(test_total_loss,3)} \
                     TEST_PERPLEXITY {round(math.exp(test_total_loss),3)}")
             
-        if epoch % 10 == 0 and epoch != 0:
-            batch_idx = random.sample(range(seq.shape[0]), 1)    
+        if epoch % 10 == 0 and epoch != 0:    
             query = []
-            for token in x[batch_idx][0]:
+            for token in x[test_idx][0]:
                 query.append(token)
             query = torch.from_numpy(np.array(query))[0:168+11]
-            #gen = generate(model, query, token_to_id["<PAD>"])
-            #print(make_sequence_from_tokens(gen, id_to_token))
             sampled  = make_sequence_from_tokens(sample_sentence(model, query,
                                                           max_len = 290,
                                                           temperature = 0), id_to_token)

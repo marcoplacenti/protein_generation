@@ -37,7 +37,7 @@ class PositionalEncoder(nn.Module):
         pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
 
-    def forward(self, x):
+    def forward(self, x, seq_len):
         #x = x * math.sqrt(self.embedding_size)
         #add constant to embedding
         seq_len = x.size(1)
@@ -172,20 +172,19 @@ def get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 class ProGen(nn.Module):
-    def __init__(self, vocab_size, embeddings_size, heads, padding_idx, number_of_layers):
+    def __init__(self, vocab_size, tensor_length, embeddings_size, heads, padding_idx, number_of_layers):
         super().__init__()
         self.number_of_layers = number_of_layers
         self.vocab_size = vocab_size
         self.embedder = Embedder(vocab_size, embeddings_size, padding_idx)
-        self.pe = PositionalEncoder(embeddings_size, max_seq_len=embeddings_size, dropout=0.1)
-        self.decoder = Decoder(embeddings_size, heads=heads)
+        self.pe = PositionalEncoder(embeddings_size, max_seq_len=tensor_length, dropout=0.1)
         self.layers = get_clones(DecoderLayer(embeddings_size, heads, 0.1), number_of_layers)
         self.toprobs = nn.Linear(embeddings_size, vocab_size)
 
     
     def forward(self, seq, mask=None):
         x = self.embedder(seq)
-        x = self.pe(x)
+        x = self.pe(x, seq.shape[0])
         for i in range(self.number_of_layers):
             x = self.layers[i](x, mask)
         #x = self.decoder(x, mask)
@@ -365,11 +364,13 @@ def sample_sentence(model, query, max_len = 140, temperature=1):
 
 def make_sequence_from_tokens(ids, id_to_token):
     sequence = map(lambda x: id_to_token[x], ids.tolist())
-    return "".join(list(sequence))
+    return " ".join(list(sequence))
 
 
 
 if __name__ == "__main__":
+    print()
+    
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -387,61 +388,98 @@ if __name__ == "__main__":
     
     mask = torch.from_numpy(np.array(mask)).to(device)
     
-    # embedding_size needs to be divisible by heads
-    model = ProGen(vocab_size=len(vocab), embeddings_size=512, heads=8, padding_idx=token_to_id["<PAD>"], number_of_layers=3).to(device)
+    embedding_sizes = [32, 64, 128, 512]
+    heads = [1, 2, 4, 8]
+    no_stacked_layers = [3, 4, 5, 6]
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    scheduler = MultiStepLR(optimizer, milestones=[60, 100, 150], gamma=0.1)
+    metrics = open('metrics.csv', 'w')
+    metrics.write("EMBEDDING_SIZE, HEADS, NUMBER OF LAYERS, EPOCH, TRAIN_LOSS, TRAIN_PERP, TEST_LOSS, TEST_PERP\n")
+    generations = open("generations.csv", "w")
+    generations.write("EMBEDDING_SIZE, HEADS, NUMBER_OF_LAYERS, EPOCH, SAMPLE")
+    scores_on_dataset = open("scores_on_dataset.csv", "w")
+    scores_on_dataset.write("EMBEDDING_SIZE, HEADS, NUMBER OF LAYERS, LOSS, PERPLEXITY\n")
 
-    batch_size = 16
-    for epoch in range(200):
-        batch_idx = random.sample(range(seq.shape[0]), batch_size*2)
-        train_idx = batch_idx[:batch_size]
-        test_idx = batch_idx[batch_size:]
+    for i in range(len(heads)):
+        print("-----------------------------------------")
+        print(f"RUNNING CONFIGURATION {i+1}/{len(heads)}...")
+        embedding_size = embedding_sizes[i]
+        head = heads[i]
+        number_of_layers = no_stacked_layers[i]
 
-        model.train()
-        optimizer.zero_grad()
+        # embedding_size needs to be divisible by heads
+        model = ProGen(vocab_size=len(vocab), embeddings_size=embedding_size, tensor_length=seq.shape[0], heads=head, padding_idx=token_to_id["<PAD>"], number_of_layers=number_of_layers).to(device)
 
-        train_input = x[train_idx]
-        train_masks = mask[train_idx]
-        train_y = y[train_idx]
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        scheduler = MultiStepLR(optimizer, milestones=[60, 100, 150], gamma=0.1)
 
-        preds = model(train_input, train_masks)
+        batch_size = 16
+        for epoch in tqdm(range(200), desc='Running epochs...'):
+            batch_idx = random.sample(range(seq.shape[0]), batch_size*2)
+            train_idx = batch_idx[:batch_size]
+            test_idx = batch_idx[batch_size:]
 
-        loss = F.nll_loss(preds, train_y, reduction='mean')#, ignore_index=0)
-        nn.utils.clip_grad_norm_(model.parameters(), 1)
+            model.train()
+            optimizer.zero_grad()
 
-        train_total_loss = loss.item()
-        
+            train_input = x[train_idx]
+            train_masks = mask[train_idx]
+            train_y = y[train_idx]
 
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
+            preds = model(train_input, train_masks)
 
-        model.eval()
-        
-        test_input = x[test_idx]
-        test_masks = mask[test_idx]
-        test_y = y[test_idx]
+            loss = F.nll_loss(preds, train_y, reduction='mean')#, ignore_index=0)
+            nn.utils.clip_grad_norm_(model.parameters(), 1)
 
-        preds = model(test_input, test_masks)
-        loss = F.nll_loss(preds, test_y, reduction='mean')#, ignore_index=0)
-        
-        test_total_loss = loss.item()
-
-        if epoch % 1 == 0:
-            print(f"EPOCH {epoch} TRAIN_LOSS {round(train_total_loss,3)} \
-                    TRAIN_PERPLEXITY {round(math.exp(train_total_loss),3)} \
-                    TEST_LOSS {round(test_total_loss,3)} \
-                    TEST_PERPLEXITY {round(math.exp(test_total_loss),3)}")
+            train_total_loss = loss.item()
             
-        if epoch % 10 == 0 and epoch != 0:    
-            query = []
-            for token in x[test_idx][0]:
-                query.append(token)
-            query = torch.from_numpy(np.array(query))[0:168+11]
-            sampled  = make_sequence_from_tokens(sample_sentence(model, query,
-                                                          max_len = 290,
-                                                          temperature = 0), id_to_token)
-            print(sampled)
 
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+
+            model.eval()
+            
+            test_input = x[test_idx]
+            test_masks = mask[test_idx]
+            test_y = y[test_idx]
+
+            preds = model(test_input, test_masks)
+            loss = F.nll_loss(preds, test_y, reduction='mean')#, ignore_index=0)
+            
+            test_total_loss = loss.item()
+
+            metrics.write("%s, %s, %s, %s, %s, %s, %s, %s\n" % \
+                (embedding_size, head, number_of_layers, epoch, \
+                    str(round(train_total_loss,3)), str(round(math.exp(train_total_loss),3)), \
+                    str(round(test_total_loss,3)), str(round(math.exp(test_total_loss),3))))
+            """
+            print(f"EPOCH {epoch} TRAIN_LOSS {round(train_total_loss,3)} \
+                        TRAIN_PERPLEXITY {round(math.exp(train_total_loss),3)} \
+                        TEST_LOSS {round(test_total_loss,3)} \
+                        TEST_PERPLEXITY {round(math.exp(test_total_loss),3)}")
+            """
+            #print("Generating sample...")
+            if epoch % 50 == 0:
+
+                query = []
+                for token in x[test_idx][0]:
+                    query.append(token)
+                query = torch.from_numpy(np.array(query))[0:168+10]
+                sampled  = make_sequence_from_tokens(sample_sentence(model, query,
+                                                            max_len = 290,
+                                                            temperature = 0), id_to_token)
+                generations.write("%s, %s, %s, %s, %s\n" % (embedding_size, head, number_of_layers, epoch, sampled))
+
+        #print("EVALUATING ENTIRE DATASET...")
+        #preds = model(x, mask)
+        #loss = F.nll_loss(preds, y, reduction='mean')#, ignore_index=0)
+        #loss = loss.item()
+        #scores.on_dataset.write("%s, %s, %s, %s, %s\n" % (embedding_size, head, number_of_layers, \
+        #    str(round(loss,3)), str(round(math.exp(loss),3))))
+
+        print("-----------------------------------------")
+        print()
+
+    scores_on_dataset.close()
+    generations.close()
+    metrics.close()

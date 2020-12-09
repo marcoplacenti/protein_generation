@@ -11,6 +11,7 @@ import random
 import pandas as pd
 from tqdm.std import tqdm
 import copy
+import difflib
 
 
 class Embedder(nn.Module):
@@ -212,31 +213,9 @@ def create_mask(s, pad_id):
 
 
 def get_data(max_length):
-    data = pd.read_csv("dataset.csv")
+    data = pd.read_csv("dataset_.csv")
     data = data.replace(np.nan, '<PAD>', regex=True)
     data = data[data["Sequence"].map(len) <= max_length]
-
-    #largest_seq = 0
-    #for col in data.columns:
-        #obs_ = np.delete(obs, np.argwhere(obs == "<PAD>"))
-        #tags = np.append(obs_[:-1], np.array(["<EOT>"]))
-        #seq = [s for s in obs_[-1]]
-        #conc = np.append(tags, seq)
-        #conc = np.append(conc, ["<EOS>"])
-        #if len(conc) > largest_seq:
-        #    largest_seq = len(conc)
-        #data_.append(conc)
-
-    #for i, obs in enumerate(data_):
-        #pad_length = largest_seq-obs.shape[0]
-        #pad_array = ["<PAD>"]*pad_length
-        #data_[i] = np.append(obs, pad_array)
-
-    #data = np.array(data_)
-
-    #vocab = set()
-    #for obs in data:
-    #    vocab.update(obs)
 
     vocab = set()
     for col in data.columns:
@@ -256,9 +235,8 @@ def get_data(max_length):
     vocab.update(["<PAD>"])
     vocab.update(["<EOS>"])
 
-    
     elements = set()
-    for col in data.columns[8:-1]:
+    for col in data.columns[1:-9]:
         elements.update(data[col].unique())
 
     elem_to_col = {}
@@ -266,13 +244,13 @@ def get_data(max_length):
         data[element] = "<PAD>"
 
     for row in data.iterrows():
-        values = np.unique(row[1][data.columns[8:-1-len(elements)]].values)
+        values = np.unique(row[1][data.columns[1:-9-len(elements)]].values)
         values = np.delete(values, np.argwhere(values=="<PAD>"))
         for element in elements:
             if element in values:
                 row[1][element] = element
 
-    data.drop(data.columns[8:-1-len(elements)], axis=1, inplace=True)
+    data.drop(data.columns[1:-9-len(elements)], axis=1, inplace=True)
     
     seq = data.pop("Sequence")
     data["Sequence"] = seq
@@ -291,23 +269,14 @@ def process_data(data, vocab, max_seq):
     token_to_id["<EOS>"] = 1
     id_to_token[1] = "<EOS>"
 
-    #token_to_id["<EOT>"] = 2
-    #id_to_token[2] = "<EOT>"
-
-    #token_to_id["<DUMMY>"] = 2
-    #id_to_token[2] = "<DUMMY>"
-
     for i, token in enumerate(vocab):
         id = len(token_to_id.keys())
-        if token != "<PAD>" and token != "<EOS>" and token != "<EOT>":
+        if token != "<PAD>" and token != "<EOS>":
             token_to_id[token] = id
             id_to_token[id] = token
             id += 1
 
     seq = []
-    #for obs in data:
-    #    encoded_obs = [token_to_id[token] for token in obs]
-    #    seq.append(encoded_obs)
     
     for record in data.values:
         tags = record[:-1]
@@ -324,7 +293,18 @@ def process_data(data, vocab, max_seq):
                 encoded_record.append(token_to_id["<PAD>"])
 
         seq.append(encoded_record)
-    
+
+        """
+        enc_rec_no_tags = []#[token_to_id["<PAD>"] for tag in tags]
+        for char in sequence:
+            enc_rec_no_tags.append(token_to_id[char])
+        enc_rec_no_tags.append(token_to_id["<EOS>"])
+        #if len(sequence) < max_seq:
+        for _ in range(max_seq-len(sequence)):
+            enc_rec_no_tags.append(token_to_id["<PAD>"])
+
+        seq.append(enc_rec_no_tags)
+        """
 
     return np.array(seq), token_to_id, id_to_token
 
@@ -344,21 +324,15 @@ def sample_categorical(lnprobs, temperature=1.0):
 def sample_sentence(model, query, max_len = 140, temperature=1):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     for _ in range(max_len - query.shape[0]):
-        #print(_)
         query_ = torch.zeros(max_len).to(torch.long)
         query_[:len(query)] = query
-        #print(make_sequence_from_tokens(query_, id_to_token))
         output = model(query_.unsqueeze(0).to(device))
-        #print(output)
         next_char_idx = sample_categorical(output[0, :, len(query) - 1], 0) #0.5
-        #print(next_char_idx)
         query = query.tolist()
         query.append(int(next_char_idx))
         query = torch.from_numpy(np.array(query))
         if int(next_char_idx) < 2:
             break
-        #print(make_sequence_from_tokens(query, id_to_token))
-        #print(query.shape)
     return query
 
 
@@ -369,8 +343,6 @@ def make_sequence_from_tokens(ids, id_to_token):
 
 
 if __name__ == "__main__":
-    print()
-    
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -381,9 +353,8 @@ if __name__ == "__main__":
     x = seq
     y = torch.hstack((x[:,1:], torch.zeros(x.shape[0], 1, dtype=torch.int32))).to(device)
     
-    seq_input = seq
     mask = []
-    for i, s in enumerate(tqdm(seq_input, desc="Creating masks")):
+    for i, s in enumerate(tqdm(x, desc="Creating masks")):
         mask.append(create_mask(s, token_to_id["<PAD>"]))
     
     mask = torch.from_numpy(np.array(mask)).to(device)
@@ -395,9 +366,7 @@ if __name__ == "__main__":
     metrics = open('metrics.csv', 'w')
     metrics.write("EMBEDDING_SIZE, HEADS, NUMBER OF LAYERS, EPOCH, TRAIN_LOSS, TRAIN_PERP, TEST_LOSS, TEST_PERP\n")
     generations = open("generations.csv", "w")
-    generations.write("EMBEDDING_SIZE, HEADS, NUMBER_OF_LAYERS, EPOCH, SAMPLE")
-    scores_on_dataset = open("scores_on_dataset.csv", "w")
-    scores_on_dataset.write("EMBEDDING_SIZE, HEADS, NUMBER OF LAYERS, LOSS, PERPLEXITY\n")
+    generations.write("EMBEDDING_SIZE, HEADS, NUMBER_OF_LAYERS, EPOCH, AVG_SIM, SAMPLE\n")
 
     for i in range(len(heads)):
         print("-----------------------------------------")
@@ -412,8 +381,8 @@ if __name__ == "__main__":
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         scheduler = MultiStepLR(optimizer, milestones=[60, 100, 150], gamma=0.1)
 
-        batch_size = 16
-        for epoch in tqdm(range(200), desc='Running epochs...'):
+        batch_size = 32
+        for epoch in tqdm(range(100), desc='Running epochs...'):
             batch_idx = random.sample(range(seq.shape[0]), batch_size*2)
             train_idx = batch_idx[:batch_size]
             test_idx = batch_idx[batch_size:]
@@ -452,34 +421,27 @@ if __name__ == "__main__":
                 (embedding_size, head, number_of_layers, epoch, \
                     str(round(train_total_loss,3)), str(round(math.exp(train_total_loss),3)), \
                     str(round(test_total_loss,3)), str(round(math.exp(test_total_loss),3))))
-            """
-            print(f"EPOCH {epoch} TRAIN_LOSS {round(train_total_loss,3)} \
-                        TRAIN_PERPLEXITY {round(math.exp(train_total_loss),3)} \
-                        TEST_LOSS {round(test_total_loss,3)} \
-                        TEST_PERPLEXITY {round(math.exp(test_total_loss),3)}")
-            """
+        
+            
             #print("Generating sample...")
-            if epoch % 50 == 0:
+            
+            if epoch % 10 == 0:# and epoch != 0:
+                #print(f"EPOCH {epoch} TRAIN_LOSS {round(train_total_loss,3)} \
+                #        TRAIN_PERPLEXITY {round(math.exp(train_total_loss),3)} \
+                #        TEST_LOSS {round(test_total_loss,3)} \
+                #        TEST_PERPLEXITY {round(math.exp(test_total_loss),3)}")
+                avg_sim = 0
+                cond = torch.from_numpy(np.array(x[0]))[:169+10]
+                generated_seq = sample_sentence(model, cond, max_len = 291, temperature = 0)[169+10:]
+                sampled = make_sequence_from_tokens(generated_seq, id_to_token)
+                #print(sampled)
+                
+                avg_sim += difflib.SequenceMatcher(None, generated_seq, torch.from_numpy(np.array(x[0]))[169+10:]).ratio()
+                generations.write("%s, %s, %s, %s, %s, %s\n" % (embedding_size, head, number_of_layers, epoch, avg_sim, sampled))
 
-                query = []
-                for token in x[test_idx][0]:
-                    query.append(token)
-                query = torch.from_numpy(np.array(query))[0:168+10]
-                sampled  = make_sequence_from_tokens(sample_sentence(model, query,
-                                                            max_len = 290,
-                                                            temperature = 0), id_to_token)
-                generations.write("%s, %s, %s, %s, %s\n" % (embedding_size, head, number_of_layers, epoch, sampled))
-
-        #print("EVALUATING ENTIRE DATASET...")
-        #preds = model(x, mask)
-        #loss = F.nll_loss(preds, y, reduction='mean')#, ignore_index=0)
-        #loss = loss.item()
-        #scores.on_dataset.write("%s, %s, %s, %s, %s\n" % (embedding_size, head, number_of_layers, \
-        #    str(round(loss,3)), str(round(math.exp(loss),3))))
 
         print("-----------------------------------------")
         print()
 
-    scores_on_dataset.close()
     generations.close()
     metrics.close()

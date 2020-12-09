@@ -359,9 +359,9 @@ if __name__ == "__main__":
     
     mask = torch.from_numpy(np.array(mask)).to(device)
     
-    embedding_sizes = [32, 64, 128, 512]
-    heads = [1, 2, 4, 8]
-    no_stacked_layers = [3, 4, 5, 6]
+    embedding_sizes = [512]#, 64, 128, 512]
+    heads = [8]#, 2, 4, 8]
+    no_stacked_layers = [3]#, 4, 5, 6]
 
     metrics = open('metrics.csv', 'w')
     metrics.write("EMBEDDING_SIZE, HEADS, NUMBER OF LAYERS, EPOCH, TRAIN_LOSS, TRAIN_PERP, TEST_LOSS, TEST_PERP\n")
@@ -375,8 +375,18 @@ if __name__ == "__main__":
         head = heads[i]
         number_of_layers = no_stacked_layers[i]
 
+        def get_n_params(model):
+            pp=0
+            for p in list(model.parameters()):
+                nn=1
+                for s in list(p.size()):
+                    nn = nn*s
+                pp += nn
+            return pp
+
         # embedding_size needs to be divisible by heads
         model = ProGen(vocab_size=len(vocab), embeddings_size=embedding_size, tensor_length=seq.shape[0], heads=head, padding_idx=token_to_id["<PAD>"], number_of_layers=number_of_layers).to(device)
+
 
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         scheduler = MultiStepLR(optimizer, milestones=[60, 100, 150], gamma=0.1)
@@ -431,17 +441,18 @@ if __name__ == "__main__":
                 #        TEST_LOSS {round(test_total_loss,3)} \
                 #        TEST_PERPLEXITY {round(math.exp(test_total_loss),3)}")
                 avg_sim = 0
-                cond = torch.from_numpy(np.array(x[0]))[:169+10]
-                generated_seq = sample_sentence(model, cond, max_len = 291, temperature = 0)[169+10:]
-                sampled = make_sequence_from_tokens(generated_seq, id_to_token)
-                #print(sampled)
+                for seq in x[test_idx]:
+                    cond = torch.from_numpy(np.array(seq))[:169+10]
+                    generated_seq = sample_sentence(model, cond, max_len = 291, temperature = 0)[169+10:]
+                    sampled = make_sequence_from_tokens(generated_seq, id_to_token)
+                    print(sampled)
                 
-                avg_sim += difflib.SequenceMatcher(None, generated_seq, torch.from_numpy(np.array(x[0]))[169+10:]).ratio()
-                generations.write("%s, %s, %s, %s, %s, %s\n" % (embedding_size, head, number_of_layers, epoch, avg_sim, sampled))
+                    avg_sim += difflib.SequenceMatcher(None, generated_seq, torch.from_numpy(np.array(x[0]))[169+10:]).ratio()
+                    generations.write("%s, %s, %s, %s, %s, %s\n" % (embedding_size, head, number_of_layers, epoch, avg_sim, sampled))
 
 
         print("-----------------------------------------")
         print()
 
-    generations.close()
-    metrics.close()
+    #generations.close()
+    #metrics.close()

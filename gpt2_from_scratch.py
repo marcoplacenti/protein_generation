@@ -255,7 +255,7 @@ def get_data(max_length):
     seq = data.pop("Sequence")
     data["Sequence"] = seq
 
-    data.to_csv("dataset_processed_1.csv", index=False)
+    data.to_csv("dataset_processed.csv", index=False)
     
 
     return data, vocab, max_seq
@@ -359,9 +359,9 @@ if __name__ == "__main__":
     
     mask = torch.from_numpy(np.array(mask)).to(device)
     
-    embedding_sizes = [512]#, 64, 128, 512]
-    heads = [8]#, 2, 4, 8]
-    no_stacked_layers = [3]#, 4, 5, 6]
+    embedding_sizes = [32, 64, 128, 512]
+    heads = [1, 2, 4, 8]
+    no_stacked_layers = [3, 4, 5, 6]
 
     metrics = open('metrics.csv', 'w')
     metrics.write("EMBEDDING_SIZE, HEADS, NUMBER OF LAYERS, EPOCH, TRAIN_LOSS, TRAIN_PERP, TEST_LOSS, TEST_PERP\n")
@@ -406,7 +406,7 @@ if __name__ == "__main__":
 
             preds = model(train_input, train_masks)
 
-            loss = F.nll_loss(preds, train_y, reduction='mean')#, ignore_index=0)
+            loss = F.nll_loss(preds, train_y, reduction='mean', ignore_index=0)
             nn.utils.clip_grad_norm_(model.parameters(), 1)
 
             train_total_loss = loss.item()
@@ -423,7 +423,7 @@ if __name__ == "__main__":
             test_y = y[test_idx]
 
             preds = model(test_input, test_masks)
-            loss = F.nll_loss(preds, test_y, reduction='mean')#, ignore_index=0)
+            loss = F.nll_loss(preds, test_y, reduction='mean', ignore_index=0)
             
             test_total_loss = loss.item()
 
@@ -433,26 +433,17 @@ if __name__ == "__main__":
                     str(round(test_total_loss,3)), str(round(math.exp(test_total_loss),3))))
         
             
-            #print("Generating sample...")
-            
             if epoch % 10 == 0:# and epoch != 0:
-                #print(f"EPOCH {epoch} TRAIN_LOSS {round(train_total_loss,3)} \
-                #        TRAIN_PERPLEXITY {round(math.exp(train_total_loss),3)} \
-                #        TEST_LOSS {round(test_total_loss,3)} \
-                #        TEST_PERPLEXITY {round(math.exp(test_total_loss),3)}")
                 avg_sim = 0
-                for seq in x[test_idx]:
-                    cond = torch.from_numpy(np.array(seq))[:169+10]
-                    generated_seq = sample_sentence(model, cond, max_len = 291, temperature = 0)[169+10:]
-                    sampled = make_sequence_from_tokens(generated_seq, id_to_token)
-                    print(sampled)
-                
-                    avg_sim += difflib.SequenceMatcher(None, generated_seq, torch.from_numpy(np.array(x[0]))[169+10:]).ratio()
-                    generations.write("%s, %s, %s, %s, %s, %s\n" % (embedding_size, head, number_of_layers, epoch, avg_sim, sampled))
+                print(make_sequence_from_tokens(x[27], id_to_token))
+                cond = torch.from_numpy(np.array(x[27]))[:169+10]
+                generated_seq = sample_sentence(model, cond, max_len = 291, temperature = 0)[169+10:]
+                sampled = make_sequence_from_tokens(generated_seq, id_to_token)
+                print(sampled)
+            
+                avg_sim += difflib.SequenceMatcher(None, generated_seq, torch.from_numpy(np.array(x[0]))[169+10:]).ratio()
+                generations.write("%s, %s, %s, %s, %s, %s\n" % (embedding_size, head, number_of_layers, epoch, avg_sim, sampled))
 
 
         print("-----------------------------------------")
         print()
-
-    #generations.close()
-    #metrics.close()

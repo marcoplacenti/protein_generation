@@ -1,5 +1,5 @@
-# protein_generation
-This repo contains code and resources used for the project "Proteins Generation using Language Model" for the course 02456 Deep Learning at DTU - Fall 2020.
+# Mini-ProGen: Learning the Amino Acid Language of Protein Families
+This repo contains code and resources used in "Mini-ProGen: Learning the Amino Acid Language of Protein Families" developed as part of the course 02456 Deep Learning at DTU - Fall 2020.
 
 To train the model
 

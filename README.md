@@ -5,8 +5,4 @@ To train the model
 
     python mini-progen.py
     
-To run in Jupyter Notebook
-
-    - upload dataset.csv on Colab
-    - upload mini-progen.ipynb on Colab
-    - execute all cells
+To run in Jupyter Notebook/Colab use mini-progen.ipynb

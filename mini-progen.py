@@ -213,7 +213,7 @@ def create_mask(s, pad_id):
 
 
 def get_data(max_length):
-    data = pd.read_csv("dataset_.csv")
+    data = pd.read_csv("dataset.csv")
     data = data.replace(np.nan, '<PAD>', regex=True)
     data = data[data["Sequence"].map(len) <= max_length]
 
@@ -447,3 +447,6 @@ if __name__ == "__main__":
 
         print("-----------------------------------------")
         print()
+        
+        metrics.close()
+        generations.close()

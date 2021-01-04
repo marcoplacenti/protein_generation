@@ -4,3 +4,9 @@ This repo contains code and resources used in "Mini-ProGen: Learning the Amino A
 To train the model
 
     python mini-progen.py
+    
+To run in Jupyter Notebook
+
+    - upload dataset.csv on Colab
+    - upload Mini_ProGen.ipynb on Colab
+    - execute all cells

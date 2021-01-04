@@ -3,4 +3,4 @@ This repo contains code and resources used for the project "Proteins Generation 
 
 To train the model
 
-    # python model.py
+    python model.py

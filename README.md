@@ -8,5 +8,5 @@ To train the model
 To run in Jupyter Notebook
 
     - upload dataset.csv on Colab
-    - upload Mini_ProGen.ipynb on Colab
+    - upload mini-progen.ipynb on Colab
     - execute all cells
